@@ -47,6 +47,7 @@ p { margin: 0; }
 .statusbar .msg strong { color: var(--ink); font-weight: 600; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-2); flex: none; }
 .dot.live { background: var(--done); } .dot.warn { background: var(--amber); } .dot.off { background: var(--hold); }
+[hidden] { display: none !important; }
 button { font: inherit; font-size: 13px; font-weight: 600; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
 button:hover { border-color: var(--ink-2); }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--review); outline-offset: 2px; }
@@ -585,10 +586,18 @@ button:disabled { opacity: .55; cursor: default; }
             'Reply with only JSON: [{"id":"123","needs":[],"soft":[],"blocks":[],"external":[],"why":"one short sentence"}]';
           try {
             const out = await sample.json(prompt);
+            // Ids come back as written ("#58030", "SHOP-108"): keep exact matches, else drop a "#" or the page's id prefix.
+            const normId = x => {
+              let s = String(x == null ? "" : x).trim();
+              if (allowed.has(s)) return s;
+              s = s.replace(/^#/, "");
+              if (prefix && s.startsWith(prefix)) s = s.slice(prefix.length);
+              return s;
+            };
             for (const r of Array.isArray(out) ? out : []) {
-              const id = String(r && r.id || "").replace(/^\D+/, "");
+              const id = normId(r && r.id);
               if (!details.has(id)) continue;
-              const ids = v => (Array.isArray(v) ? v : []).map(x => String(x).replace(/^\D+/, "")).filter(x => allowed.has(x) && x !== id);
+              const ids = v => (Array.isArray(v) ? v : []).map(normId).filter(x => allowed.has(x) && x !== id);
               text.set(id, { needs: ids(r.needs), soft: ids(r.soft), blocks: ids(r.blocks),
                 external: (Array.isArray(r.external) ? r.external : []).map(String).filter(Boolean).slice(0, 3).map(s => s.slice(0, 60)),
                 why: typeof r.why === "string" ? r.why.slice(0, 240) : "" });
