@@ -100,9 +100,18 @@ button:disabled { opacity: .55; cursor: default; }
 .src { font-size: 11px; color: var(--ink-2); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .plan-note { font-size: 12.5px; color: var(--ink-2); }
+.card.open-kids { border-color: var(--amber); box-shadow: inset 3px 0 0 var(--amber); }
 .kids { display: grid; gap: 4px; border-top: 1px dashed var(--line); padding-top: 6px; }
 .kid { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; font-size: 12px; color: var(--ink-2); }
 .kid .id { font-size: 11.5px; } .kid .k-title { overflow-wrap: anywhere; } .kid.done .k-title { text-decoration: line-through; }
+details.fold { display: grid; gap: 10px; border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+.lane > details.fold { grid-column: 1 / -1; }
+details.fold > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--done); list-style-position: inside; }
+details.fold > summary span { color: var(--ink-2); font-weight: 400; }
+details.fold[open] > summary { margin-bottom: 10px; }
+details.fold .fold-body { display: grid; gap: 10px; }
+.lane > details.fold .fold-body { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.closed { font-size: 11.5px; color: var(--ink-2); }
 @media (max-width: 720px) { .train { grid-auto-flow: row; grid-auto-columns: auto; } .train-scroll { overflow-x: visible; } }
 </style>
 
@@ -172,7 +181,7 @@ button:disabled { opacity: .55; cursor: default; }
     items = p.items.map(it => {
       const s = { ...it, id: String(it.id) };
       const prev = (old && old.get(s.id)) || null;   // keep live state across a plan swap
-      if (prev) { s.state = prev.state; s.stateLabel = prev.stateLabel; s.title = prev.title; s.points = prev.points ?? s.points; }
+      if (prev) { s.state = prev.state; s.stateLabel = prev.stateLabel; s.title = prev.title; s.points = prev.points ?? s.points; s.closedAt = prev.closedAt ?? s.closedAt; }
       return s;
     });
     byId = new Map(items.map(s => [s.id, s]));
@@ -199,6 +208,36 @@ button:disabled { opacity: .55; cursor: default; }
     return "new";
   }
   const isDone = s => s && s.state === "done";
+  // Done items closed within the last recentDoneHours stay in view; older ones (or with no known close date)
+  // fold into a "done earlier" section so open work is easy to see.
+  const RECENT_MS = (CONFIG.recentDoneHours ?? 48) * 3600000;
+  const closedMs = s => (s && s.closedAt ? Date.parse(s.closedAt) : NaN);
+  const isRecentDone = s => isDone(s) && Date.now() - closedMs(s) < RECENT_MS;
+  const foldOpen = new Set((() => { try { return JSON.parse(localStorage.getItem("bo-folds") || "[]"); } catch (_) { return []; } })());
+  const saveFolds = () => { try { localStorage.setItem("bo-folds", JSON.stringify([...foldOpen])); } catch (_) {} };
+  const ago = ms => {
+    const h = Math.max(0, Math.round((Date.now() - ms) / 3600000));
+    return h < 1 ? "just now" : h < 24 ? h + " h ago" : Math.round(h / 24) + " d ago";
+  };
+  // Cards for a list, with older done items folded away under one <details>.
+  function foldedCards(list, key) {
+    const shown = list.filter(s => !isDone(s) || isRecentDone(s));
+    const old = list.filter(s => isDone(s) && !isRecentDone(s));
+    const out = shown.map(card);
+    if (old.length) {
+      const d = el("details", "fold");
+      d.open = foldOpen.has(key);
+      d.addEventListener("toggle", () => { d.open ? foldOpen.add(key) : foldOpen.delete(key); saveFolds(); });
+      const sm = el("summary", null, old.length + " done earlier ");
+      sm.append(el("span", null, "(" + sum(old) + " pts)"));
+      const body = el("div", "fold-body");
+      if (d.open) body.append(...old.map(card));
+      else d.addEventListener("toggle", () => { if (d.open && !body.childElementCount) body.append(...old.map(card)); }, { once: true });
+      d.append(sm, body);
+      out.push(d);
+    }
+    return out;
+  }
 
   function status(s) {
     switch (s.state) {
@@ -221,7 +260,13 @@ button:disabled { opacity: .55; cursor: default; }
     a.href = CONFIG.itemUrl.replace("{id}", encodeURIComponent(id)); a.target = "_blank"; a.rel = "noopener";
     return a;
   }
-  const kidsOf = id => [...extras.values()].filter(x => x.parent === id);
+  // Live items not in the plan go in the "new" panel when they have no parent on the board, or when they are
+  // still open but their parent is done (a bug on a closed story would otherwise hide in the done pile).
+  // Every other child item goes on its parent's card.
+  const isOpen = x => !isDone(x) && x.state !== "removed";
+  const topExtras = () => [...extras.values()].filter(x => (!byId.has(x.parent) && !extras.has(x.parent))
+    || (isOpen(x) && isDone(byId.get(x.parent))));
+  const kidsOf = id => { const top = new Set(topExtras().map(x => x.id)); return [...extras.values()].filter(x => x.parent === id && !top.has(x.id)); };
 
   function card(s) {
     const c = el("div", "card");
@@ -245,11 +290,14 @@ button:disabled { opacity: .55; cursor: default; }
     const bottom = el("div", "row");
     const [cls, label] = status(s);
     bottom.append(el("span", "pill " + cls, label));
+    if (isDone(s) && !isNaN(closedMs(s))) bottom.append(el("span", "closed", "closed " + ago(closedMs(s))));
     if (CRIT.has(s.id) && !isDone(s)) bottom.append(el("span", "crit-tag", "critical path"));
     c.append(bottom);
     if (s.note && !isDone(s)) c.append(el("div", "note", s.note));
     if (s.outside) c.append(el("div", "note", "No longer in the tracker scope."));
+    if (s.unplanned && isDone(byId.get(s.parent))) c.append(el("div", "note", (s.type || "Child item") + " on " + prefix + s.parent + ", which is done."));
     const kids = kidsOf(s.id);
+    if (kids.some(isOpen)) c.classList.add("open-kids");
     if (kids.length) {
       const k = el("div", "kids");
       for (const x of kids) {
@@ -279,7 +327,7 @@ button:disabled { opacity: .55; cursor: default; }
       const par = w.key === "done" ? "" : (w.m || (ws.length > 1 ? ws.length + " in parallel" : "1 at a time"));
       head.append(el("span", "n", w.n), el("span", "t", w.title || (w.key === "done" ? "Done" : "")),
         el("span", "m", (par ? par + " · " : "") + sum(ws.filter(isDone)) + "/" + sum(ws) + " pts done"));
-      sec.append(head, ...ws.map(card));
+      sec.append(head, ...foldedCards(ws, "wave:" + w.key));
       train.append(sec);
     }
 
@@ -290,16 +338,16 @@ button:disabled { opacity: .55; cursor: default; }
       p.append(el("h2", null, l.title || l.key));
       if (l.intro) p.append(el("p", "note", l.intro));
       const lane = el("div", "lane");
-      lane.append(...l.items.map(id => byId.get(String(id))).filter(Boolean).map(card));
+      lane.append(...foldedCards(l.items.map(id => byId.get(String(id))).filter(Boolean), "lane:" + l.key));
       p.append(lane);
       lanes.append(p);
     }
 
     // Live items not in the plan: children of a shown item go on its card, the rest in the "new" panel.
-    const top = [...extras.values()].filter(x => !byId.has(x.parent) && !extras.has(x.parent));
+    const top = topExtras();
     document.getElementById("unplanned").hidden = top.length === 0;
     document.getElementById("unplanned-h").textContent = "New since the plan (" + top.length + ")";
-    document.getElementById("unplanned-list").replaceChildren(...top.map(card));
+    document.getElementById("unplanned-list").replaceChildren(...foldedCards(top, "unplanned"));
     const openNew = top.filter(x => !isDone(x)).length;
     document.getElementById("sum-new-wrap").hidden = openNew === 0;
     document.getElementById("sum-new").textContent = openNew;
@@ -373,6 +421,7 @@ button:disabled { opacity: .55; cursor: default; }
       if (st) { s.state = st; s.stateLabel = typeof r.state === "string" && st !== "new" && st !== "done" ? r.state : null; }
       if (typeof r.title === "string" && r.title) s.title = r.title;
       if (typeof r.points === "number") s.points = r.points;
+      s.closedAt = s.state === "done" ? (typeof r.closedAt === "string" && r.closedAt ? r.closedAt : s.closedAt || null) : null;
     }
     extras = next;
     for (const s of items) s.outside = !!scope && !scope.has(s.id);
@@ -552,7 +601,7 @@ button:disabled { opacity: .55; cursor: default; }
       try {
         show("Looking for new items…");
         await once(true);
-        const top = [...extras.values()].filter(x => !byId.has(x.parent) && !extras.has(x.parent));
+        const top = topExtras();
         if (!top.length) { show("No new items: everything in scope is already in the plan."); return; }
 
         show("Reading links for " + top.length + " new item" + (top.length > 1 ? "s" : "") + "…");

@@ -68,7 +68,7 @@ Pick the connection the page will call, in this order:
 3. none: publish a static snapshot and say so.
 
 The page must follow the **scope**, not a fixed list of ids: items created in the tracker after
-publishing have to show up (in a "New since the plan" panel; children of a planned item go on its card).
+publishing have to show up (in a "New since the plan" panel; children of a planned item go on its card, which gets an amber edge while one is open, except an open child of a done item, which goes in the panel so the plan button can place it).
 - If one tool can query by scope and returns the fields (JQL `parent = ABC-1`, an issue search by
   milestone or label), use it as the single read call. Never `key in (...)` / a list of numbers.
 - If the item tool only takes ids (ADO `get_batch`), add a **discover** call that lists the ids in scope
@@ -80,7 +80,11 @@ write `extract.js`. Without discover it is a function `(result, helpers) => [{id
 points?, type?, parent?}]`. With discover it is an object:
 `{discover: (result, helpers) => [ids], itemsInput: (ids, liveInput) => input, items: (result, helpers) => [...]}`.
 Return `type` and `parent` so new items can be shown in the right place, and drop containers (epics,
-features) in `items`.
+features) in `items`. Also return `closedAt` (ISO date the item was closed; ADO
+`Microsoft.VSTS.Common.ClosedDate`, Jira `resolutiondate`, GitHub `closed_at`) and put it in items.json
+for the snapshot: done items closed more than `recentDoneHours` ago (config, default 48) fold into a
+"done earlier" section in each column and lane, so open work stays readable. Without a date, a done
+item counts as old.
 
 **Planning from the page.** Add a `live.detail` call (one item, with its description and dependency
 links) and two more extract members, `detailInput: (id, liveDetailInput) => input` and
